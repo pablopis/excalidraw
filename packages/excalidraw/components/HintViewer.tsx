@@ -19,10 +19,12 @@ import { isNodeInFlowchart } from "@excalidraw/element";
 
 import type { EditorInterface } from "@excalidraw/common";
 
+import { useAtomValue } from "../editor-jotai";
 import { t } from "../i18n";
 import { getShortcutKey } from "../shortcut";
 import { isEraserActive } from "../appState";
 import { isGridModeEnabled } from "../snapping";
+import { textAutocompleteSuggestionAtom } from "../wysiwyg/textAutocomplete";
 
 import "./HintViewer.scss";
 
@@ -46,7 +48,11 @@ const getHints = ({
   editorInterface,
   app,
   altHeld,
-}: HintViewerProps & { altHeld: boolean }): null | string | string[] => {
+  hasTextSuggestion,
+}: HintViewerProps & {
+  altHeld: boolean;
+  hasTextSuggestion: boolean;
+}): null | string | string[] => {
   const { activeTool, isResizing, isRotating, lastPointerDownWith } = appState;
   const multiMode = appState.multiElement !== null;
 
@@ -174,17 +180,29 @@ const getHints = ({
     });
   }
 
-  if (selectedElements.length === 1 && isTextElement(selectedElements[0])) {
+  if (
+    selectedElements.length === 1 &&
+    isTextElement(selectedElements[0]) &&
+    !appState.editingTextElement
+  ) {
     return t("hints.text_selected", {
       shortcut: getTaggedShortcutKey("Enter"),
     });
   }
 
   if (appState.editingTextElement) {
-    return t("hints.text_editing", {
+    const textEditing = t("hints.text_editing", {
       shortcut_1: getTaggedShortcutKey("Escape"),
       shortcut_2: getTaggedShortcutKey(["CtrlOrCmd", "Enter"]),
     });
+    return hasTextSuggestion
+      ? [
+          textEditing,
+          t("hints.text_acceptSuggestion", {
+            shortcut: getTaggedShortcutKey("Tab"),
+          }),
+        ]
+      : textEditing;
   }
 
   if (appState.croppingElementId) {
@@ -296,6 +314,7 @@ export const HintViewer = ({
   app,
 }: HintViewerProps) => {
   const altHeld = app.modifiers.useHeld("alt");
+  const hasTextSuggestion = useAtomValue(textAutocompleteSuggestionAtom);
 
   if (!appState.showHints) {
     return null;
@@ -307,6 +326,7 @@ export const HintViewer = ({
     editorInterface,
     app,
     altHeld,
+    hasTextSuggestion,
   });
 
   if (!hints) {

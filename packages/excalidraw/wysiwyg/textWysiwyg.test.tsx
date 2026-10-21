@@ -3594,4 +3594,139 @@ describe("textWysiwyg", () => {
       expect(h.elements.filter((el) => !el.isDeleted)).toHaveLength(0);
     });
   });
+
+  describe("autocomplete", () => {
+    const getSuggestion = () =>
+      document.querySelector<HTMLElement>(
+        ".excalidraw-wysiwyg-suggestion__text",
+      );
+    const isSuggestionShown = () =>
+      getSuggestion()?.parentElement?.style.display !== "none";
+
+    let editor: HTMLTextAreaElement;
+
+    beforeEach(async () => {
+      await render(<Excalidraw handleKeyboardGlobally={true} />);
+      API.setElements([
+        API.createElement({ type: "text", text: "Authentication Service" }),
+        API.createElement({ type: "text", text: "Redis cache" }),
+      ]);
+      UI.clickTool("text");
+      mouse.clickAt(400, 400);
+      editor = await getTextEditor();
+    });
+
+    it("suggests the rest of a label on the canvas", () => {
+      updateTextEditor(editor, "Checked by Auth");
+
+      expect(isSuggestionShown()).toBe(true);
+      expect(getSuggestion()!.textContent).toBe("entication Service");
+      expect(document.querySelector(".HintViewer")?.textContent).toContain(
+        "to accept the suggestion",
+      );
+    });
+
+    it("accepts the suggestion with Tab instead of indenting", () => {
+      updateTextEditor(editor, "Checked by Auth");
+      fireEvent.keyDown(editor, { key: KEYS.TAB });
+
+      expect(editor.value).toBe("Checked by Authentication Service");
+      expect(editor.selectionStart).toBe(editor.value.length);
+      expect(isSuggestionShown()).toBe(false);
+      expect(
+        (
+          h.elements.find((el) => el.id === h.state.editingTextElement?.id) as
+            | ExcalidrawTextElement
+            | undefined
+        )?.originalText,
+      ).toBe("Checked by Authentication Service");
+    });
+
+    it("accepts the suggestion with → at the end of the text", () => {
+      updateTextEditor(editor, "reads from red");
+      fireEvent.keyDown(editor, { key: KEYS.ARROW_RIGHT });
+
+      expect(editor.value).toBe("reads from Redis cache");
+    });
+
+    it("accepts the suggestion when it's tapped", () => {
+      updateTextEditor(editor, "Red");
+      fireEvent.pointerDown(getSuggestion()!);
+
+      expect(editor.value).toBe("Redis cache");
+    });
+
+    it("shows the whole suggestion for a text that grows as it's typed", () => {
+      updateTextEditor(editor, "Auth");
+
+      expect(getSuggestion()!.style.maxWidth).toBe("");
+    });
+
+    it("indents with Tab when there's nothing to suggest", () => {
+      updateTextEditor(editor, "Nothing like it");
+      fireEvent.keyDown(editor, { key: KEYS.TAB });
+
+      expect(isSuggestionShown()).toBe(false);
+      expect(editor.value).toBe(`${tab}Nothing like it`);
+    });
+
+    it("submits without the suggestion on Escape", async () => {
+      updateTextEditor(editor, "Auth");
+      Keyboard.exitTextEditor(editor);
+
+      expect(await getTextEditor({ waitForEditor: false })).toBe(null);
+      expect(getSuggestion()).toBe(null);
+      expect(
+        h.elements.some(
+          (el) => isTextElement(el) && el.originalText === "Auth",
+        ),
+      ).toBe(true);
+    });
+
+    it("hides the suggestion while composing", () => {
+      updateTextEditor(editor, "Auth");
+      fireEvent.compositionStart(editor);
+      expect(isSuggestionShown()).toBe(false);
+
+      fireEvent.compositionEnd(editor);
+      expect(isSuggestionShown()).toBe(true);
+    });
+  });
+
+  describe("autocomplete in a container", () => {
+    it("keeps the suggestion within the container's label", async () => {
+      await render(<Excalidraw handleKeyboardGlobally={true} />);
+      API.setElements([
+        API.createElement({
+          type: "text",
+          text: "Authentication Service",
+          x: 500,
+          y: 500,
+        }),
+      ]);
+      const rectangle = UI.createElement("rectangle", {
+        x: 10,
+        y: 20,
+        width: 120,
+        height: 60,
+      });
+      API.setSelectedElements([rectangle]);
+      Keyboard.keyPress(KEYS.ENTER);
+      const editor = await getTextEditor();
+      expect(
+        h.elements.some(
+          (el) => isTextElement(el) && el.containerId === rectangle.id,
+        ),
+      ).toBe(true);
+
+      updateTextEditor(editor, "Auth");
+
+      const suggestion = document.querySelector<HTMLElement>(
+        ".excalidraw-wysiwyg-suggestion__text",
+      )!;
+      expect(suggestion.textContent).toBe("entication Service");
+      expect(suggestion.style.maxWidth).toMatch(/px$/);
+      expect(parseFloat(suggestion.style.maxWidth)).toBeLessThanOrEqual(120);
+    });
+  });
 });
