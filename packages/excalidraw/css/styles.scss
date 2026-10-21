@@ -146,6 +146,25 @@ body.excalidraw-cursor-resize * {
     > textarea {
       pointer-events: auto;
     }
+
+    // the autocomplete suggestion after the caret (see textWysiwyg): the
+    // text's own font and color, faded like a placeholder
+    > .excalidraw-wysiwyg-suggestion {
+      position: absolute;
+      z-index: var(--zIndex-wysiwyg);
+      white-space: pre;
+      pointer-events: none;
+      backface-visibility: hidden;
+    }
+
+    .excalidraw-wysiwyg-suggestion__text {
+      position: absolute;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0.4;
+      pointer-events: auto;
+      cursor: pointer;
+    }
   }
 
   &__embeddable {

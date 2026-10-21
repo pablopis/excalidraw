@@ -73,6 +73,19 @@ import {
   actionZoomOut,
 } from "../actions/actionCanvas";
 
+import { editorJotaiStore } from "../editor-jotai";
+
+import {
+  getTextAutocompleteSuggestion,
+  getTextAutocompleteVocabulary,
+  textAutocompleteSuggestionAtom,
+} from "./textAutocomplete";
+
+import type {
+  TextAutocompleteSuggestion,
+  TextAutocompleteVocabulary,
+} from "./textAutocomplete";
+
 import type { ParsedDataTranferList } from "../clipboard";
 
 import type App from "../components/App";
@@ -306,6 +319,8 @@ export const textWysiwyg = ({
     font: ReturnType<typeof getFontString>;
     height: number;
     lineHeightPx: number;
+    /** how wide the text may get: its container's, or its own width */
+    maxWidth: number;
     textAlign: ExcalidrawTextElement["textAlign"];
     width: number;
     x: number;
@@ -510,6 +525,9 @@ export const textWysiwyg = ({
           updatedTextElement.fontSize,
           updatedTextElement.lineHeight,
         ),
+        maxWidth: container
+          ? getBoundTextMaxWidth(container, updatedTextElement)
+          : updatedTextElement.width,
         textAlign,
         width: updatedTextElement.width,
         x: coordX,
@@ -624,10 +642,11 @@ export const textWysiwyg = ({
   };
 
   /**
-   * Where the caret is on screen (see getViewportCoords), as the editor lays
-   * the text out: the bounds of its line-high stroke.
+   * Where the caret is in the text's own box (unzoomed, unrotated), as the
+   * editor lays the text out: the x of its stroke, the line it's on, and the
+   * line's direction.
    */
-  const getCaretViewportBounds = () => {
+  const getCaretTextPosition = () => {
     const layout = currentTextLayout;
     if (!layout) {
       return null;
@@ -678,6 +697,19 @@ export const textWysiwyg = ({
       lineStartX +
       (nativeX ??
         (direction === "rtl" ? lineWidth - widthBefore : widthBefore));
+    return { layout, caretX, lineIndex, direction };
+  };
+
+  /**
+   * Where the caret is on screen (see getViewportCoords), as the editor lays
+   * the text out: the bounds of its line-high stroke.
+   */
+  const getCaretViewportBounds = () => {
+    const position = getCaretTextPosition();
+    if (!position) {
+      return null;
+    }
+    const { layout, caretX, lineIndex } = position;
     const center = pointFrom(
       layout.x + layout.width / 2,
       layout.y + layout.height / 2,
@@ -731,6 +763,139 @@ export const textWysiwyg = ({
       }
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // autocomplete: the rest of a word or label already on the canvas, shown
+  // after the caret in the text's own font and color, accepted with Tab, →
+  // (at the end of the text) or a tap on it (see textAutocomplete)
+
+  let vocabulary: TextAutocompleteVocabulary | null = null;
+  let suggestion: TextAutocompleteSuggestion | null = null;
+  let isComposing = false;
+
+  // the editor's box (sized, placed and transformed like it), so the
+  // suggestion sits where the caret is in the text's own coordinates
+  const suggestionBox = ownerDocument.createElement("div");
+  suggestionBox.classList.add("excalidraw-wysiwyg-suggestion");
+  suggestionBox.setAttribute("aria-hidden", "true");
+  suggestionBox.style.display = "none";
+  const suggestionText = ownerDocument.createElement("span");
+  suggestionText.classList.add("excalidraw-wysiwyg-suggestion__text");
+  suggestionBox.append(suggestionText);
+
+  const setHasSuggestion = (hasSuggestion: boolean) => {
+    if (
+      editorJotaiStore.get(textAutocompleteSuggestionAtom) !== hasSuggestion
+    ) {
+      editorJotaiStore.set(textAutocompleteSuggestionAtom, hasSuggestion);
+    }
+  };
+
+  const hideSuggestion = () => {
+    suggestion = null;
+    suggestionBox.style.display = "none";
+    setHasSuggestion(false);
+  };
+
+  const updateSuggestion = () => {
+    const next =
+      !isDestroyed && !isComposing
+        ? getTextAutocompleteSuggestion({
+            text: editable.value,
+            selectionStart: editable.selectionStart,
+            selectionEnd: editable.selectionEnd,
+            vocabulary: (vocabulary ??= getTextAutocompleteVocabulary(
+              app.scene.getNonDeletedElements(),
+              element.id,
+            )),
+          })
+        : null;
+    const position = next && getCaretTextPosition();
+    // an RTL line would need the suggestion before the caret, over the text
+    if (!next || !position || position.direction === "rtl") {
+      hideSuggestion();
+      return;
+    }
+    suggestion = next;
+    const { style } = editable;
+    Object.assign(suggestionBox.style, {
+      display: "",
+      left: style.left,
+      top: style.top,
+      width: style.width,
+      height: style.height,
+      transformOrigin: style.transformOrigin,
+      transform: style.transform,
+      fontFamily: style.fontFamily,
+      fontSize: style.fontSize,
+      fontStyle: style.fontStyle,
+      fontWeight: style.fontWeight,
+      lineHeight: style.lineHeight,
+      color: style.color,
+      opacity: style.opacity,
+    });
+    const { layout, caretX, lineIndex } = position;
+    suggestionText.textContent = next.remainder;
+    suggestionText.style.left = `${caretX}px`;
+    suggestionText.style.top = `${lineIndex * layout.lineHeightPx}px`;
+    // a wrapping editor's text keeps within its max width (a label within its
+    // container), aligned in it, and so does the suggestion, cut short with
+    // an ellipsis — a text that grows as it's typed gets it whole
+    const maxRight =
+      layout.textAlign === "center"
+        ? (layout.maxWidth + layout.width) / 2
+        : layout.textAlign === "right"
+        ? layout.width
+        : layout.maxWidth;
+    suggestionText.style.maxWidth =
+      style.whiteSpace === "pre-wrap"
+        ? `${Math.max(maxRight - caretX, getLineWidth("…", layout.font) * 2)}px`
+        : "";
+    setHasSuggestion(true);
+  };
+
+  const acceptSuggestion = () => {
+    if (!suggestion) {
+      return;
+    }
+    const { start, end, completion } = suggestion;
+    hideSuggestion();
+    editable.setSelectionRange(start, end);
+    // typed in, so that the browser's undo can take it back
+    if (!ownerDocument.execCommand?.("insertText", false, completion)) {
+      editable.setRangeText(completion, start, end, "end");
+      editable.dispatchEvent(new Event("input"));
+    }
+  };
+
+  const isAcceptSuggestionKey = (event: KeyboardEvent) =>
+    !event.shiftKey &&
+    !event.altKey &&
+    !event[KEYS.CTRL_OR_CMD] &&
+    (event.key === KEYS.TAB ||
+      (event.key === KEYS.ARROW_RIGHT &&
+        editable.selectionEnd === editable.value.length));
+
+  editable.addEventListener("input", updateSuggestion);
+  // the caret may have moved
+  editable.addEventListener("keyup", updateSuggestion);
+  editable.addEventListener("pointerup", updateSuggestion);
+  editable.addEventListener("compositionstart", () => {
+    isComposing = true;
+    hideSuggestion();
+  });
+  editable.addEventListener("compositionend", () => {
+    isComposing = false;
+    updateSuggestion();
+  });
+  // tapping the suggestion takes it, where there's no Tab key to press
+  suggestionText.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    acceptSuggestion();
+  });
+
+  // ---------------------------------------------------------------------------
 
   let pendingInitialSelection =
     initialSelection ??
@@ -864,7 +1029,10 @@ export const textWysiwyg = ({
   }
 
   editable.onkeydown = (event) => {
-    if (!event.shiftKey && actionZoomIn.keyTest(event)) {
+    if (suggestion && !event.isComposing && isAcceptSuggestionKey(event)) {
+      event.preventDefault();
+      acceptSuggestion();
+    } else if (!event.shiftKey && actionZoomIn.keyTest(event)) {
       event.preventDefault();
       app.actionManager.executeAction(actionZoomIn);
       updateWysiwygStyle();
@@ -1105,6 +1273,8 @@ export const textWysiwyg = ({
     unbindUpdate();
     unsubOnChange();
     unbindOnScroll();
+    hideSuggestion();
+    suggestionBox.remove();
     editorBox?.removeEventListener("scroll", onEditorBoxScroll);
     editorBox?.style.removeProperty("left");
     editorBox?.style.removeProperty("right");
@@ -1241,12 +1411,14 @@ export const textWysiwyg = ({
   const unsubOnChange = app.onChangeEmitter.on((elements) => {
     if (app.state.theme !== LAST_THEME) {
       updateWysiwygStyle();
+      updateSuggestion();
     }
   });
 
   // handle updates of textElement properties of editing element
   const unbindUpdate = app.scene.onUpdate(() => {
     updateWysiwygStyle();
+    updateSuggestion();
     const isPopupOpened = !!ownerDocument.activeElement?.closest(
       ".properties-content",
     );
@@ -1257,6 +1429,7 @@ export const textWysiwyg = ({
 
   const unbindOnScroll = app.onScrollChangeEmitter.on(() => {
     updateWysiwygStyle();
+    updateSuggestion();
   });
 
   // The browser reveals an out-of-view caret by scrolling the nearest scroll
@@ -1307,6 +1480,7 @@ export const textWysiwyg = ({
   if (canvas && "ResizeObserver" in ownerWindow) {
     observer = new ownerWindow.ResizeObserver(() => {
       updateWysiwygStyle();
+      updateSuggestion();
     });
     observer.observe(canvas);
   } else {
@@ -1323,7 +1497,7 @@ export const textWysiwyg = ({
     });
   });
   ownerWindow.addEventListener("beforeunload", handleSubmit);
-  editorBox!.appendChild(editable);
+  editorBox!.append(editable, suggestionBox);
 
   return handleSubmit;
 };
